@@ -332,6 +332,10 @@ test("host validation normalizes public IPv6 and DNS root dots", () => {
 });
 
 const acceptedLines = new Map([
+    [
+        "proxy.example.com:8080:alice:https://password",
+        "http://alice:https%3A%2F%2Fpassword@proxy.example.com:8080",
+    ],
     ["proxy.example.com:8080", "http://proxy.example.com:8080"],
     ["  proxy.example.com:8080  ", "http://proxy.example.com:8080"],
     [
@@ -419,6 +423,9 @@ for (const line of [
     "http://alice:part/two@proxy.example.com:8080",
     "http://[fe80::1%eth0]:8080",
     "http://[not:ipv6]:8080",
+    "http://alice:part\\two@proxy.example.com:8080",
+    "http://alice:part\ttwo@proxy.example.com:8080",
+    "proxy.example.com:8080:alice:\ud800",
 ]) {
     test(`proxy line normalization rejects ${JSON.stringify(line)}`, () => {
         assert.equal(validateProxyLine(line), null);

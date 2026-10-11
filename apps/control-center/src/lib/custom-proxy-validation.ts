@@ -133,7 +133,8 @@ export function validateProxyLine(rawLine: string): string | null {
     const line = rawLine.trim();
     if (!line) return null;
 
-    if (line.includes("://")) {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(line)) {
+        if (/[\\\u0000-\u0020\u007f]/.test(line)) return null;
         const match = line.match(/^([a-z][a-z0-9+.-]*):\/\/([^/?#]+)\/?$/i);
         if (!match) return null;
         const scheme = match[1].toLowerCase();
@@ -167,9 +168,13 @@ export function validateProxyLine(rawLine: string): string | null {
     if (!match) return null;
     const [, host, port, username, password] = match;
     if (username !== undefined && !password) return null;
-    const credentials =
-        username === undefined
-            ? ""
-            : `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`;
-    return serializeProxy("http", host, port, credentials);
+    try {
+        const credentials =
+            username === undefined
+                ? ""
+                : `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`;
+        return serializeProxy("http", host, port, credentials);
+    } catch {
+        return null;
+    }
 }
