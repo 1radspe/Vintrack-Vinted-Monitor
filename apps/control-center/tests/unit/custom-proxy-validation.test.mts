@@ -4,6 +4,7 @@ import {
     isBlockedProxyHostname,
     validateCustomProxyHost,
     validateCustomProxyPort,
+    validateProxyLine,
 } from "../../src/lib/custom-proxy-validation.ts";
 
 // NOTE: validateCustomProxyHost performs only static, literal-value checks.
@@ -86,8 +87,8 @@ test("validateCustomProxyHost: blocks dot-local suffixes", () => {
     assert.equal(validateCustomProxyHost("myhost.local"), null);
 });
 
-test("validateCustomProxyHost: current behavior allows bare local host", () => {
-    assert.equal(validateCustomProxyHost("local"), "local");
+test("validateCustomProxyHost: rejects single-label internal hostnames", () => {
+    assert.equal(validateCustomProxyHost("local"), null);
 });
 
 test("validateCustomProxyHost: blocks IPv4 loopback 127.0.0.1", () => {
@@ -259,3 +260,163 @@ test("isBlockedProxyHostname: does not block a valid public IPv6 address", () =>
 test("isBlockedProxyHostname: does not block an IPv4-mapped IPv6 address whose embedded IPv4 is public", () => {
     assert.equal(isBlockedProxyHostname("::ffff:8.8.8.8"), false);
 });
+
+for (const host of [
+    "localhost.",
+    "proxy.local.",
+    "proxy.localhost.",
+    "postgres",
+    "proxy.internal",
+    "proxy.home.arpa",
+    "127.1",
+    "2130706433",
+    "0x7f000001",
+    "0177.0.0.1",
+    "127.0.0.01",
+    "9999.1.1.1",
+    "100.64.0.1",
+    "100.127.255.255",
+    "192.0.0.1",
+    "192.0.2.1",
+    "198.18.0.1",
+    "198.19.255.255",
+    "198.51.100.1",
+    "203.0.113.1",
+    "224.0.0.1",
+    "240.0.0.1",
+    "255.255.255.255",
+    "[::ffff:7f00:1]",
+    "::ffff:10.0.0.1",
+    "::ffff:a9fe:a9fe",
+    "0:0:0:0:0:0:0:1",
+    "2001:db8::1",
+    "ff02::1",
+    "fe80::1%eth0",
+    "[fe80::1%eth0]",
+]) {
+    test(`host validation rejects non-public or malformed host ${host}`, () => {
+        assert.equal(validateCustomProxyHost(host), null);
+        assert.equal(isBlockedProxyHostname(host), true);
+    });
+}
+
+for (const host of [
+    "proxy.example.com",
+    "8.8.8.8",
+    "100.63.255.255",
+    "100.128.0.1",
+    "198.17.255.255",
+    "198.20.0.1",
+    "192.0.0.9",
+    "192.0.0.10",
+    "2001:4860:4860::8888",
+    "::ffff:8.8.8.8",
+]) {
+    test(`host validation accepts public host ${host}`, () => {
+        assert.notEqual(validateCustomProxyHost(host), null);
+        assert.equal(isBlockedProxyHostname(host), false);
+    });
+}
+
+test("host validation normalizes public IPv6 and DNS root dots", () => {
+    assert.equal(
+        validateCustomProxyHost("[2001:4860:4860:0:0:0:0:8888]"),
+        "2001:4860:4860::8888",
+    );
+    assert.equal(
+        validateCustomProxyHost("Proxy.Example.Com."),
+        "proxy.example.com",
+    );
+});
+
+const acceptedLines = new Map([
+    ["proxy.example.com:8080", "http://proxy.example.com:8080"],
+    ["  proxy.example.com:8080  ", "http://proxy.example.com:8080"],
+    [
+        "proxy.example.com:8080:alice:part:two#%@/?",
+        "http://alice:part%3Atwo%23%25%40%2F%3F@proxy.example.com:8080",
+    ],
+    [
+        "proxy.example.com:8080:alice:part%23two",
+        "http://alice:part%2523two@proxy.example.com:8080",
+    ],
+    [
+        "[2001:4860:4860::8888]:8080:alice:password",
+        "http://alice:password@[2001:4860:4860::8888]:8080",
+    ],
+    [
+        "http://alice:p%3Aa%23s%25s@proxy.example.com:8080",
+        "http://alice:p%3Aa%23s%25s@proxy.example.com:8080",
+    ],
+    ["http://proxy.example.com:80/", "http://proxy.example.com:80"],
+    ["https://proxy.example.com:443", "https://proxy.example.com:443"],
+    [
+        "socks4://alice@proxy.example.com:1080",
+        "socks4://alice@proxy.example.com:1080",
+    ],
+    [
+        "socks5://alice:pass@proxy.example.com:1080",
+        "socks5://alice:pass@proxy.example.com:1080",
+    ],
+    ["HTTP://PROXY.EXAMPLE.COM.:8080", "http://proxy.example.com:8080"],
+    [
+        "https://[2001:4860:4860:0:0:0:0:8888]:65535",
+        "https://[2001:4860:4860::8888]:65535",
+    ],
+    ["http://[::ffff:8.8.8.8]:8080", "http://[::ffff:808:808]:8080"],
+]);
+for (const [line, expected] of acceptedLines) {
+    test(`proxy line normalization accepts ${line}`, () => {
+        const normalized = validateProxyLine(line);
+        assert.equal(normalized, expected);
+        // All persisted URLs can be fed back through the editor unchanged.
+        assert.equal(validateProxyLine(normalized!), normalized);
+        const parsed = new URL(normalized!);
+        if (line.includes("part:two")) {
+            assert.equal(decodeURIComponent(parsed.password), "part:two#%@/?");
+        }
+    });
+}
+
+for (const line of [
+    "",
+    "proxy.example.com",
+    "proxy.example.com:0",
+    "proxy.example.com:65536",
+    "proxy.example.com:99999",
+    "proxy.example.com:-1",
+    "proxy.example.com:80.5",
+    "999.999.999.999:8080",
+    "9999.1.1.1:8080",
+    "127.1:8080",
+    "localhost.:8080",
+    "proxy.local.:8080",
+    "proxy.example.com:8080:alice:",
+    "proxy.example.com:8080::password",
+    "http://[::ffff:127.0.0.1]:8080",
+    "https://[::ffff:10.0.0.1]:8080",
+    "socks5://[::ffff:169.254.169.254]:1080",
+    "socks4://[::ffff:7f00:1]:1080",
+    "[::ffff:7f00:1]:8080:alice:pass",
+    "http://127.1:8080",
+    "http://2130706433:8080",
+    "http://0x7f000001:8080",
+    "http://0177.0.0.1:8080",
+    "http://localhost.:8080",
+    "http://proxy.example.com:0",
+    "https://proxy.example.com:65536",
+    "socks5://proxy.example.com:99999",
+    "ftp://proxy.example.com:21",
+    "http://proxy.example.com:8080/path",
+    "http://proxy.example.com:8080?query=value",
+    "http://proxy.example.com:8080#fragment",
+    "http://alice:part%two@proxy.example.com:8080",
+    "http://alice:part#two@proxy.example.com:8080",
+    "http://alice:part/two@proxy.example.com:8080",
+    "http://[fe80::1%eth0]:8080",
+    "http://[not:ipv6]:8080",
+]) {
+    test(`proxy line normalization rejects ${JSON.stringify(line)}`, () => {
+        assert.equal(validateProxyLine(line), null);
+    });
+}
