@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,8 +18,8 @@ type SellerEnrichmentScheduler struct {
 	// strictRetryOldestNanos and backgroundOldestNanos mirror oldestNanos for
 	// the other two priority classes so operators can tell a growing
 	// strict-retry backlog (seller data still missing near the alert
-	// deadline) apart from a growing background backlog (best-effort
-	// enrichment of unpersisted seed items), instead of only ever seeing the
+	// deadline) apart from a growing background backlog (best-effort cache
+	// refreshes and non-blocking enrichment retries), instead of only seeing the
 	// foreground age that QueueAge already reports.
 	strictRetryOldestNanos atomic.Int64
 	backgroundOldestNanos  atomic.Int64
@@ -109,11 +110,15 @@ func (s *SellerEnrichmentScheduler) Run(ctx context.Context) {
 
 	refreshOldest := func() {
 		var oldestForeground, oldestStrict, oldestBackground time.Time
+		now := time.Now()
 		for i := range lanes {
 			if len(lanes[i].jobs) == 0 {
 				continue
 			}
 			job := lanes[i].jobs[0]
+			if !job.readyAt.IsZero() && job.readyAt.After(now) {
+				continue
+			}
 			switch {
 			case strings.HasPrefix(lanes[i].key, "background:"):
 				if oldestBackground.IsZero() || job.enqueuedAt.Before(oldestBackground) {
@@ -135,7 +140,10 @@ func (s *SellerEnrichmentScheduler) Run(ctx context.Context) {
 	}
 
 	add := func(job enrichmentJob) {
-		key := job.proxySource
+		// A lane is scoped to one monitor as well as its transport. Without the
+		// monitor ID, one broad high-frequency search can place thousands of
+		// lookups ahead of every other member using the same regional pool.
+		key := fmt.Sprintf("%s:%d", job.proxySource, job.monitor.ID)
 		if job.enricher != nil {
 			key = job.enricher.domain + ":" + key
 		}
@@ -146,7 +154,14 @@ func (s *SellerEnrichmentScheduler) Run(ctx context.Context) {
 		}
 		if index, ok := laneIndex[key]; ok {
 			insertAt := len(lanes[index].jobs)
-			if !job.readyAt.IsZero() {
+			if job.readyAt.IsZero() {
+				for i, queued := range lanes[index].jobs {
+					if !queued.readyAt.IsZero() {
+						insertAt = i
+						break
+					}
+				}
+			} else {
 				for i, queued := range lanes[index].jobs {
 					if !queued.readyAt.IsZero() && job.readyAt.Before(queued.readyAt) {
 						insertAt = i
@@ -181,11 +196,10 @@ func (s *SellerEnrichmentScheduler) Run(ctx context.Context) {
 		// Ingest an already-waiting foreground job before choosing the next
 		// worker assignment, but only once per iteration: looping here with
 		// `continue` until s.input goes empty let a steady stream of new
-		// arrivals win this branch forever on a busy system, so the loop
-		// never reached the dispatch select below and nothing was ever
-		// handed to a worker. Background producers use a separate bounded
-		// input, so a restart seed burst still cannot sit in front of a
-		// fresh alert.
+		// arrivals win this branch forever on a busy system, so the loop never
+		// reached the dispatch select below and nothing was handed to a worker.
+		// Background producers use a separate bounded input so cache refreshes
+		// and retries cannot sit in front of a fresh alert.
 		select {
 		case job := <-s.input:
 			add(job)

@@ -29,6 +29,24 @@ func TestSellerInfoCache_SetAndGet(t *testing.T) {
 	}
 }
 
+func TestConfigureFreeSellerClientPoolBoundsPerProxyLoad(t *testing.T) {
+	t.Setenv("FREE_SELLER_MAX_REQUESTS_PER_PROXY_SECOND", "0.4")
+	pool := &ClientPool{}
+	configureSellerClientPool(pool, "free")
+	if pool.maxRequestsPerSecond != 0.4 {
+		t.Fatalf("maxRequestsPerSecond = %v, want 0.4", pool.maxRequestsPerSecond)
+	}
+	if pool.quarantineAfter != 3 {
+		t.Fatalf("quarantineAfter = %d, want 3", pool.quarantineAfter)
+	}
+
+	privatePool := &ClientPool{}
+	configureSellerClientPool(privatePool, "group:private")
+	if privatePool.maxRequestsPerSecond != 0 || privatePool.quarantineAfter != 0 {
+		t.Fatalf("private seller pool was unexpectedly rate limited: %+v", privatePool)
+	}
+}
+
 func TestSellerInfoCache_IsolatedByDomainAndExpires(t *testing.T) {
 	cache := &sellerInfoCache{cache: make(map[string]sellerCacheEntry, 4)}
 	cache.Set("www.vinted.de", 7, SellerInfo{Region: "🇩🇪 DE"}, time.Now())
@@ -39,6 +57,23 @@ func TestSellerInfoCache_IsolatedByDomainAndExpires(t *testing.T) {
 	cache.Set("www.vinted.de", 8, SellerInfo{Region: "old"}, time.Now().Add(-time.Hour))
 	if _, ok := cache.Get("www.vinted.de", 8, time.Minute); ok {
 		t.Fatal("expired seller cache entry was returned")
+	}
+}
+
+func TestSellerInfoCacheFreshStaleAndTwentyFourHourBoundary(t *testing.T) {
+	cache := &sellerInfoCache{cache: make(map[string]sellerCacheEntry, 4)}
+	info := SellerInfo{Region: "🇩🇪 DE", RatingAvailable: true}
+	cache.Set("www.vinted.de", 9, info, time.Now().Add(-31*time.Minute))
+	if _, ok := cache.Get("www.vinted.de", 9, 30*time.Minute); ok {
+		t.Fatal("31 minute entry was fresh")
+	}
+	cache.Set("www.vinted.de", 9, info, time.Now().Add(-31*time.Minute))
+	if _, ok := cache.Get("www.vinted.de", 9, 24*time.Hour); !ok {
+		t.Fatal("31 minute entry was not available as stale")
+	}
+	cache.Set("www.vinted.de", 10, info, time.Now().Add(-24*time.Hour-time.Second))
+	if _, ok := cache.Get("www.vinted.de", 10, 24*time.Hour); ok {
+		t.Fatal("entry beyond the 24 hour boundary was returned")
 	}
 }
 

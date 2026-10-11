@@ -60,9 +60,8 @@ func fetchCatalogWithSessionRetry(
 }
 
 func fetchCatalogAttempt(ctx context.Context, client *Client, initialURL string, domain string) ([]model.VintedItem, int, error) {
-	bootstrap, ok := client.CatalogBootstrap(domain)
-	if !ok {
-		return nil, 0, fmt.Errorf("catalog bootstrap unavailable for %s", domain)
+	if !client.CatalogReady(domain) {
+		return nil, 0, fmt.Errorf("catalog cookie session unavailable for %s", domain)
 	}
 
 	reqURL := initialURL
@@ -71,7 +70,7 @@ func fetchCatalogAttempt(ctx context.Context, client *Client, initialURL string,
 		if err != nil {
 			return nil, 0, err
 		}
-		req.Header = newCatalogAPIHeaders(domain, bootstrap)
+		req.Header = newCatalogAPIHeaders(domain, client.catalogAnonID(domain))
 
 		resp, err := client.HttpClient.Do(req)
 		if err != nil {
@@ -114,9 +113,32 @@ func fetchCatalogAttempt(ctx context.Context, client *Client, initialURL string,
 		resp.Body.Close()
 		client.FlushTrackedTraffic()
 		normalizeCatalogItems(data.Items)
+		if err := validateCatalogCurrency(domain, data.Items); err != nil {
+			return nil, 200, err
+		}
 		return data.Items, 200, nil
 	}
 	return nil, 0, fmt.Errorf("catalog too many redirects for %s", domain)
+}
+
+func validateCatalogCurrency(domain string, items []model.VintedItem) error {
+	expected := model.DomainCurrency(domain)
+	if expected == "" {
+		return nil
+	}
+	for _, item := range items {
+		currency := strings.ToUpper(strings.TrimSpace(item.Price.Currency))
+		if currency != "" && currency != expected {
+			return fmt.Errorf("catalog currency mismatch for %s: got %s, want %s", domain, currency, expected)
+		}
+		if item.TotalItemPrice != nil {
+			currency = strings.ToUpper(strings.TrimSpace(item.TotalItemPrice.Currency))
+			if currency != "" && currency != expected {
+				return fmt.Errorf("catalog total currency mismatch for %s: got %s, want %s", domain, currency, expected)
+			}
+		}
+	}
+	return nil
 }
 
 func normalizeCatalogItems(items []model.VintedItem) {

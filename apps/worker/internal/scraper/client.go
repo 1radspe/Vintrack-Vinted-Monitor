@@ -1,16 +1,13 @@
 package scraper
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,15 +18,6 @@ import (
 	"github.com/bogdanfinn/tls-client/profiles"
 	"golang.org/x/net/proxy"
 )
-
-const maxCatalogBootstrapBytes = 512 * 1024
-
-var csrfTokenPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
-
-type catalogBootstrap struct {
-	csrfToken string
-	anonID    string
-}
 
 type clientFingerprint struct {
 	name    string
@@ -58,7 +46,7 @@ func configuredChromeUA() string {
 func acceptLanguageForDomain(domain string) string {
 	switch {
 	case strings.Contains(domain, "vinted.co.uk"):
-		return "en-GB,en;q=0.9"
+		return "en-GB,en-US;q=0.9,en;q=0.8"
 	case strings.Contains(domain, "vinted.ie"):
 		return "en-IE,en;q=0.9"
 	case strings.Contains(domain, "vinted.at"):
@@ -162,21 +150,19 @@ func newAPIHeaders(domain string) http.Header {
 	}
 }
 
-func newCatalogAPIHeaders(domain string, bootstrap catalogBootstrap) http.Header {
+// newCatalogAPIHeaders binds the request to the regional marketplace. Without
+// Locale and X-Anon-Id svc-catalogue falls back to the exit IP's country, so
+// free proxies return foreign feeds priced in foreign currencies.
+func newCatalogAPIHeaders(domain string, anonID string) http.Header {
 	fingerprint := configuredClientFingerprint()
-	locale := strings.SplitN(acceptLanguageForDomain(domain), ",", 2)[0]
-	return http.Header{
+	headers := http.Header{
 		"User-Agent":         {configuredChromeUA()},
 		"Accept":             {"application/json, text/plain, */*"},
 		"Accept-Language":    {acceptLanguageForDomain(domain)},
-		"Cache-Control":      {"no-cache"},
-		"Pragma":             {"no-cache"},
 		"Origin":             {fmt.Sprintf("https://%s", domain)},
 		"Referer":            {fmt.Sprintf("https://%s/", domain)},
-		"Locale":             {locale},
+		"Locale":             {strings.SplitN(acceptLanguageForDomain(domain), ",", 2)[0]},
 		"Platform":           {"web"},
-		"X-Anon-Id":          {bootstrap.anonID},
-		"X-Csrf-Token":       {bootstrap.csrfToken},
 		"X-Next-App":         {"marketplace-web"},
 		"Sec-Ch-Ua":          {fmt.Sprintf(`"Google Chrome";v="%s", "Chromium";v="%s", "Not_A Brand";v="24"`, fingerprint.version, fingerprint.version)},
 		"Sec-Ch-Ua-Mobile":   {"?0"},
@@ -184,7 +170,29 @@ func newCatalogAPIHeaders(domain string, bootstrap catalogBootstrap) http.Header
 		"Sec-Fetch-Dest":     {"empty"},
 		"Sec-Fetch-Mode":     {"cors"},
 		"Sec-Fetch-Site":     {"same-site"},
+		"Priority":           {"u=1, i"},
 	}
+	if anonID != "" {
+		headers.Set("X-Anon-Id", anonID)
+	}
+	return headers
+}
+
+// catalogAnonID returns the anonymous session id Vinted issued during warmup.
+func (c *Client) catalogAnonID(domain string) string {
+	if c == nil || c.HttpClient == nil {
+		return ""
+	}
+	target, err := url.Parse(fmt.Sprintf("https://%s/", catalogAPIHost(domain)))
+	if err != nil {
+		return ""
+	}
+	for _, cookie := range c.HttpClient.GetCookies(target) {
+		if cookie.Name == "anon_id" {
+			return strings.TrimSpace(cookie.Value)
+		}
+	}
+	return ""
 }
 
 type Client struct {
@@ -196,7 +204,7 @@ type Client struct {
 	lastRxBytes     int64
 	warmedMu        sync.Mutex
 	warmed          map[string]bool
-	bootstrap       map[string]catalogBootstrap
+	catalogReady    map[string]bool
 }
 
 func NewClient(proxyURL string, trafficRecorder func(txBytes int64, rxBytes int64)) (*Client, error) {
@@ -227,7 +235,7 @@ func NewClientWithTimeout(proxyURL string, trafficRecorder func(txBytes int64, r
 
 	return &Client{
 		HttpClient: httpClient, ProxyURL: proxyURL, trafficRecorder: trafficRecorder,
-		warmed: make(map[string]bool), bootstrap: make(map[string]catalogBootstrap),
+		warmed: make(map[string]bool), catalogReady: make(map[string]bool),
 	}, nil
 }
 
@@ -251,7 +259,7 @@ func NewSellerClient(proxyURL string, trafficRecorder func(txBytes int64, rxByte
 
 	return &Client{
 		HttpClient: httpClient, ProxyURL: proxyURL, trafficRecorder: trafficRecorder,
-		warmed: make(map[string]bool), bootstrap: make(map[string]catalogBootstrap),
+		warmed: make(map[string]bool), catalogReady: make(map[string]bool),
 	}, nil
 }
 
@@ -428,7 +436,27 @@ func (c *Client) WarmUpRegion(domain string) error {
 }
 
 func (c *Client) WarmUpRegionContext(ctx context.Context, domain string) error {
-	currentURL := fmt.Sprintf("https://%s/", domain)
+	// The regional help page establishes the anonymous cookie session without
+	// downloading the substantially larger marketplace homepage. Fall back only
+	// when that route is unsupported; retrying transport or access failures via
+	// the homepage would merely double the public-proxy budget.
+	err := c.warmUpRegionURLContext(ctx, domain, fmt.Sprintf("https://%s/help", domain))
+	if err == nil {
+		return nil
+	}
+	if !shouldFallbackCatalogWarmup(err) {
+		return err
+	}
+	return c.warmUpRegionURLContext(ctx, domain, fmt.Sprintf("https://%s/", domain))
+}
+
+func shouldFallbackCatalogWarmup(err error) bool {
+	status := statusCodeFromError(err)
+	return status == 404 || status == 410
+}
+
+func (c *Client) warmUpRegionURLContext(ctx context.Context, domain string, initialURL string) error {
+	currentURL := initialURL
 
 	for redirects := 0; redirects < 3; redirects++ {
 		currentDomain := hostFromURL(currentURL, domain)
@@ -472,27 +500,48 @@ func (c *Client) WarmUpRegionContext(ctx context.Context, domain string) error {
 			}
 		}
 
-		csrfToken, readErr := readCatalogCSRFToken(resp.Body)
+		// Catalogue GETs now use the browser's cookie session directly. Closing
+		// the large help response after its headers avoids spending the proxy
+		// budget on obsolete CSRF/anonymous metadata embedded deep in the body.
 		resp.Body.Close()
 		c.FlushTrackedTraffic()
-		if readErr != nil {
-			return fmt.Errorf("read warmup %s: %w", currentDomain, readErr)
-		}
-
-		bootstrap := catalogBootstrap{
-			csrfToken: csrfToken,
-			anonID:    strings.TrimSpace(resp.Header.Get("X-Anon-Id")),
-		}
-		if bootstrap.csrfToken == "" || bootstrap.anonID == "" {
-			return fmt.Errorf("warmup %s missing catalog bootstrap metadata", currentDomain)
-		}
+		c.synchronizeCatalogCookies(domain)
 		c.warmedMu.Lock()
-		c.bootstrap[domain] = bootstrap
+		c.catalogReady[domain] = true
 		c.warmedMu.Unlock()
 		return nil
 	}
 
 	return fmt.Errorf("warmup too many redirects for %s", domain)
+}
+
+// synchronizeCatalogCookies mirrors the anonymous browser session from the
+// marketplace host to its catalogue API host. Vinted currently sets several
+// bootstrap cookies as host-only cookies on www, while the browser catalogue
+// request is sent to api.<region>. Without this explicit hand-off tls-client's
+// standards-compliant jar sends no cookies to the API host and UK rejects the
+// otherwise valid public request with 403.
+func (c *Client) synchronizeCatalogCookies(domain string) {
+	if c == nil || c.HttpClient == nil {
+		return
+	}
+	sourceURL, err := url.Parse(fmt.Sprintf("https://%s/", domain))
+	if err != nil {
+		return
+	}
+	targetHost := catalogAPIHost(domain)
+	if targetHost == domain {
+		return
+	}
+	targetURL, err := url.Parse(fmt.Sprintf("https://%s/", targetHost))
+	if err != nil {
+		return
+	}
+	cookies := c.HttpClient.GetCookies(sourceURL)
+	if len(cookies) == 0 {
+		return
+	}
+	c.HttpClient.SetCookies(targetURL, cookies)
 }
 
 func (c *Client) EnsureWarm(domain string) error {
@@ -520,45 +569,14 @@ func (c *Client) EnsureWarmContext(ctx context.Context, domain string) error {
 func (c *Client) ResetWarm(domain string) {
 	c.warmedMu.Lock()
 	delete(c.warmed, domain)
-	delete(c.bootstrap, domain)
+	delete(c.catalogReady, domain)
 	c.warmedMu.Unlock()
 }
 
-func (c *Client) CatalogBootstrap(domain string) (catalogBootstrap, bool) {
+func (c *Client) CatalogReady(domain string) bool {
 	c.warmedMu.Lock()
 	defer c.warmedMu.Unlock()
-	bootstrap, ok := c.bootstrap[domain]
-	return bootstrap, ok && bootstrap.csrfToken != "" && bootstrap.anonID != ""
-}
-
-func readCatalogCSRFToken(reader io.Reader) (string, error) {
-	limited := io.LimitReader(reader, maxCatalogBootstrapBytes)
-	body := make([]byte, 0, 64*1024)
-	chunk := make([]byte, 32*1024)
-	for {
-		read, err := limited.Read(chunk)
-		if read > 0 {
-			body = append(body, chunk[:read]...)
-			if token := extractCSRFToken(body); token != "" {
-				return token, nil
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return "", nil
-			}
-			return "", err
-		}
-	}
-}
-
-func extractCSRFToken(body []byte) string {
-	index := bytes.Index(body, []byte("CSRF_TOKEN"))
-	if index < 0 {
-		return ""
-	}
-	end := min(len(body), index+256)
-	return string(csrfTokenPattern.Find(body[index:end]))
+	return c.catalogReady[domain]
 }
 
 // Close releases the client's pooled connections.

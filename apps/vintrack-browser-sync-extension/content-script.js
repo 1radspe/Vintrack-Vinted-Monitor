@@ -93,12 +93,17 @@
     window.postMessage({ type, payload }, window.location.origin);
   }
 
+  // Vinted can replace root attributes during hydration. Keep readiness in
+  // this content-script instance, which is discarded on document navigation.
+  let pageBridgeReady = false;
+
   function ensurePageBridge() {
     if (!isVintedHost(window.location.hostname)) {
       return;
     }
 
-    if (document.documentElement.dataset.vintrackPageBridge === "ready") {
+    if (pageBridgeReady || document.documentElement.dataset.vintrackPageBridge === "ready") {
+      pageBridgeReady = true;
       return;
     }
 
@@ -116,6 +121,7 @@
     script.async = false;
     script.dataset.vintrackPageBridge = "true";
     script.onload = () => {
+      pageBridgeReady = true;
       document.documentElement.dataset.vintrackPageBridge = "ready";
       script.remove();
     };
@@ -177,7 +183,8 @@
 
   function waitForPageBridgeReady(timeoutMs = 15000) {
     return new Promise((resolve, reject) => {
-      if (document.documentElement.dataset.vintrackPageBridge === "ready") {
+      if (pageBridgeReady || document.documentElement.dataset.vintrackPageBridge === "ready") {
+        pageBridgeReady = true;
         resolve();
         return;
       }
@@ -197,6 +204,7 @@
 
         window.clearTimeout(timeout);
         window.removeEventListener("message", handleReady);
+        pageBridgeReady = true;
         document.documentElement.dataset.vintrackPageBridge = "ready";
         resolve();
       }
@@ -240,6 +248,24 @@
         },
         window.location.origin,
       );
+    });
+  }
+
+  function requestCheckoutNavigation(payload) {
+    return new Promise(resolve => {
+      const requestId = crypto.randomUUID();
+      const timeout = window.setTimeout(() => finish({ ok: false }), 2500);
+      function finish(result) {
+        window.clearTimeout(timeout);
+        window.removeEventListener("message", handleResponse);
+        resolve(result);
+      }
+      function handleResponse(event) {
+        if (event.source === window && event.data?.type === "VINTRACK_PAGE_CHECKOUT_NAVIGATE_RESPONSE" &&
+            event.data.payload?.requestId === requestId) finish(event.data.payload);
+      }
+      window.addEventListener("message", handleResponse);
+      post("VINTRACK_PAGE_CHECKOUT_NAVIGATE_REQUEST", { checkoutUrl: payload?.checkoutUrl, requestId });
     });
   }
 
@@ -801,9 +827,11 @@
             runtimeError
               ? {
                   ok: false,
-                  error: runtimeError.message || "Extension checkout failed",
+                  code: "extension_connection_lost",
+                  requestId: event.data.payload?.requestId,
+                  error: "The extension connection was interrupted. Reload Vintrack and Vinted; check Vinted before starting checkout again.",
                 }
-              : response || { ok: false },
+              : { ...(response || { ok: false }), requestId: event.data.payload?.requestId },
           );
         },
       );
@@ -825,6 +853,7 @@
       sendResponseSafely(sendResponse, {
         ok: true,
         isVintedPage: isVintedHost(window.location.hostname),
+        pageBridgeReady: pageBridgeReady || document.documentElement.dataset.vintrackPageBridge === "ready",
       });
       return false;
     }
@@ -845,6 +874,17 @@
             requestId: message.payload?.requestId,
           }),
         );
+      return true;
+    }
+
+    if (message?.type === "VINTRACK_NAVIGATE_CHECKOUT") {
+      if (!isVintedHost(window.location.hostname) || !pageBridgeReady) {
+        sendResponseSafely(sendResponse, { ok: false });
+        return false;
+      }
+      requestCheckoutNavigation(message.payload)
+        .then(response => sendResponseSafely(sendResponse, response))
+        .catch(() => sendResponseSafely(sendResponse, { ok: false }));
       return true;
     }
 

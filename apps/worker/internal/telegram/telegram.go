@@ -550,14 +550,11 @@ func ratingLabel(rating string) string {
 }
 
 func compactItemKeyboard(item model.Item) map[string]interface{} {
-	if !isTelegramButtonURL(item.URL) {
-		return nil
+	buttons := make([]map[string]string, 0, 1)
+	if isTelegramButtonURL(item.URL) {
+		buttons = append(buttons, map[string]string{"text": "View on Vinted", "url": item.URL})
 	}
-	return map[string]interface{}{
-		"inline_keyboard": [][]map[string]string{{
-			{"text": "View on Vinted", "url": item.URL},
-		}},
-	}
+	return itemKeyboardMarkup(item, buttons)
 }
 
 func itemKeyboard(item model.Item) map[string]interface{} {
@@ -571,12 +568,22 @@ func itemKeyboard(item model.Item) map[string]interface{} {
 	if dashboardURL := dashboardItemURL(item); isTelegramButtonURL(dashboardURL) {
 		buttons = append(buttons, map[string]string{"text": "Dashboard", "url": dashboardURL})
 	}
-	if len(buttons) == 0 {
+	return itemKeyboardMarkup(item, buttons)
+}
+
+func itemKeyboardMarkup(item model.Item, buttons []map[string]string) map[string]interface{} {
+	rows := make([][]map[string]string, 0, 2)
+	if isTelegramButtonURL(item.CheckoutStartURL) {
+		rows = append(rows, []map[string]string{{"text": "⚡ Oneclick checkout", "url": item.CheckoutStartURL}})
+	}
+	if len(buttons) > 0 {
+		rows = append(rows, buttons)
+	}
+	if len(rows) == 0 {
 		return nil
 	}
-
 	return map[string]interface{}{
-		"inline_keyboard": [][]map[string]string{buttons},
+		"inline_keyboard": rows,
 	}
 }
 

@@ -12,6 +12,16 @@ export type FreeProxyRegionHealth = {
     reserve: number;
     warming: number;
     usable: number;
+    serving: boolean;
+    mature: number;
+    runtimeSuccessRate: number | null;
+    runtimeSampleCount: number;
+    canaryState: "building" | "collecting" | "passed" | "failed" | null;
+    canarySampleCount: number;
+    canarySuccessRate: number | null;
+    canaryWindowMinutes: number;
+    canaryLastProbeAt: string | Date | null;
+    readinessReason: string | null;
     pending: number;
     cooldown: number;
     dead: number;
@@ -109,10 +119,12 @@ export function RegionPoolStatus({
     onSelectRegion?: (region: string) => void;
 }) {
     const regionHealth = getFreeProxyRegionHealth(freeProxy, selectedRegion);
-    const usable = regionHealth?.usable ?? 0;
+    const mature = regionHealth?.mature ?? regionHealth?.active ?? 0;
     const min = freeProxy.minActivePerRegion;
-    const percentage = Math.min(100, Math.round((usable / min) * 100));
-    const isHealthy = Boolean(freeProxy.enabled && regionHealth?.healthy);
+    const percentage = Math.min(100, Math.round((mature / min) * 100));
+    const isHealthy = Boolean(
+        freeProxy.enabled && regionHealth?.healthy && regionHealth?.serving,
+    );
     const poolRegions = REGIONS.map((region) => ({
         ...region,
         health: freeProxy.regions?.[region.code],
@@ -154,8 +166,8 @@ export function RegionPoolStatus({
                                 {isHealthy
                                     ? "Ready"
                                     : freeProxy.enabled
-                                      ? "Recovering"
-                                      : "Disabled"}
+                                        ? "Recovering"
+                                        : "Disabled"}
                             </Badge>
                             {freeProxy.usage ? (
                                 <Badge
@@ -174,8 +186,8 @@ export function RegionPoolStatus({
                         <p className="text-muted-foreground mt-1 text-xs">
                             {freeProxy.enabled
                                 ? isHealthy
-                                    ? `${usable} usable of ${min} target. ${regionHealth?.active ?? 0} fresh, ${regionHealth?.reserve ?? 0} reserve, ${regionHealth?.warming ?? 0} warming.`
-                                    : `${usable} usable right now. The pool is rebuilding automatically and monitors stay active.`
+                                    ? `${mature} mature proxies are serving this region. Runtime success: ${regionHealth?.runtimeSuccessRate === null || regionHealth?.runtimeSuccessRate === undefined ? "collecting" : `${Math.round(regionHealth.runtimeSuccessRate)}%`}.`
+                                    : `${mature} mature of ${min} required. The pool is rebuilding automatically; active monitors wait safely.`
                                 : "Free Proxy Pool is currently disabled by admin."}
                         </p>
                     </div>
@@ -230,18 +242,22 @@ export function RegionPoolStatus({
                                 freeProxy.enabled && region.health?.healthy,
                             );
                             const selected = selectedRegion === region.code;
+                            const blockedUntilReady =
+                                region.code === "uk" && !ready;
                             return (
                                 <button
                                     key={region.code}
                                     type="button"
                                     disabled={
-                                        !freeProxy.enabled || !onSelectRegion
+                                        !freeProxy.enabled ||
+                                        !onSelectRegion ||
+                                        blockedUntilReady
                                     }
                                     onClick={() =>
                                         onSelectRegion?.(region.code)
                                     }
                                     className={cn(
-                                        "flex min-w-0 items-center justify-between gap-2 rounded-md border px-2.5 py-2 text-left transition-colors",
+                                        "flex min-w-0 items-center justify-between gap-2 rounded-md border px-2.5 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                                         selected
                                             ? "border-primary bg-primary/5"
                                             : ready
@@ -249,9 +265,11 @@ export function RegionPoolStatus({
                                               : "border-amber-500/20 bg-amber-500/5 hover:border-amber-500/40",
                                     )}
                                     title={
-                                        ready
-                                            ? `Use ${region.label}`
-                                            : `Use ${region.label} while its pool recovers`
+                                        blockedUntilReady
+                                            ? `${region.label} unlocks after safe capacity is validated`
+                                            : ready
+                                              ? `Use ${region.label}`
+                                              : `Use ${region.label} while its pool recovers`
                                     }
                                 >
                                     <span className="flex min-w-0 items-center gap-1.5">
@@ -268,7 +286,7 @@ export function RegionPoolStatus({
                                                 : "text-muted-foreground",
                                         )}
                                     >
-                                        {region.health?.usable ?? 0}
+                                        {region.health?.mature ?? 0}
                                     </span>
                                 </button>
                             );

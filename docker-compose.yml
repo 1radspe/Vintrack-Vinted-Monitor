@@ -88,7 +88,7 @@ services:
       - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-192mb} --maxmemory-policy allkeys-lru --stop-writes-on-bgsave-error no
+    command: redis-server --appendonly yes --maxmemory ${REDIS_MAXMEMORY:-768mb} --maxmemory-policy allkeys-lfu --stop-writes-on-bgsave-error no
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -96,7 +96,7 @@ services:
       retries: 5
     # Leave headroom above maxmemory for the AOF rewrite fork, which transiently
     # increases resident memory.
-    mem_limit: ${REDIS_MEM_LIMIT:-320m}
+    mem_limit: ${REDIS_MEM_LIMIT:-896m}
     logging: *default-logging
     restart: unless-stopped
 
@@ -119,8 +119,8 @@ services:
       - AUTH_URL=${AUTH_URL:-http://localhost:3000}
       - SEO_INDEXING_ENABLED=${SEO_INDEXING_ENABLED:-false}
       - VINTED_SERVICE_URL=http://vinted-service:4000
-      - BROWSER_EXTENSION_LATEST_VERSION=${BROWSER_EXTENSION_LATEST_VERSION:-0.1.6}
-      - BROWSER_EXTENSION_MIN_VERSION=${BROWSER_EXTENSION_MIN_VERSION:-0.1.5}
+      - BROWSER_EXTENSION_LATEST_VERSION=${BROWSER_EXTENSION_LATEST_VERSION:-0.3.3}
+      - BROWSER_EXTENSION_MIN_VERSION=${BROWSER_EXTENSION_MIN_VERSION:-0.2.1}
       - BROWSER_EXTENSION_FIREFOX_URL=${BROWSER_EXTENSION_FIREFOX_URL:-https://addons.mozilla.org/firefox/addon/vintrack-browser-sync/}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME:-}
@@ -249,11 +249,14 @@ services:
       - PRICE_WATCH_HTML_LIMIT_BYTES=${PRICE_WATCH_HTML_LIMIT_BYTES:-3145728}
       - TELEGRAM_GLOBAL_RATE_PER_SECOND=${TELEGRAM_GLOBAL_RATE_PER_SECOND:-25}
       - TELEGRAM_GLOBAL_BURST=${TELEGRAM_GLOBAL_BURST:-25}
-      - ENRICHMENT_WORKERS=${ENRICHMENT_WORKERS:-24}
+      - ENRICHMENT_WORKERS=${ENRICHMENT_WORKERS:-48}
       - SELLER_ENRICHMENT_TIMEOUT_MS=${SELLER_ENRICHMENT_TIMEOUT_MS:-4500}
       - SELLER_CLIENT_POOL_SIZE=${SELLER_CLIENT_POOL_SIZE:-16}
+      - FREE_SELLER_CLIENT_POOL_SIZE=${FREE_SELLER_CLIENT_POOL_SIZE:-50}
+      - FREE_SELLER_MAX_REQUESTS_PER_PROXY_SECOND=${FREE_SELLER_MAX_REQUESTS_PER_PROXY_SECOND:-0.5}
       - SELLER_CACHE_TTL_MINUTES=${SELLER_CACHE_TTL_MINUTES:-30}
-      - SELLER_HEDGE_DELAY_MS=${SELLER_HEDGE_DELAY_MS:-350}
+      - SELLER_STALE_TTL_MINUTES=${SELLER_STALE_TTL_MINUTES:-1440}
+      - SELLER_HEDGE_DELAY_MS=${SELLER_HEDGE_DELAY_MS:-450}
       - SELLER_NEGATIVE_CACHE_TTL_MS=${SELLER_NEGATIVE_CACHE_TTL_MS:-3000}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - AUTH_URL=${AUTH_URL:-http://localhost:3000}
