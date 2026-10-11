@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
@@ -72,6 +73,9 @@ func main() {
 	})
 
 	server := api.NewServer(sessionMgr, cfg.ListenAddr)
+	automationCtx, stopAutomations := context.WithCancel(context.Background())
+	defer stopAutomations()
+	go server.StartAccountAutomations(automationCtx)
 
 	go func() {
 		if err := server.Start(); err != nil {
