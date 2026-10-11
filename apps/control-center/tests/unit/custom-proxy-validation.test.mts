@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+    isBlockedProxyHostname,
     validateCustomProxyHost,
     validateCustomProxyPort,
 } from "../../src/lib/custom-proxy-validation.ts";
@@ -204,4 +205,57 @@ test("validateCustomProxyPort: rejects a positive sign", () => {
 test("validateCustomProxyPort: rejects excessively long numeric input", () => {
     assert.equal(validateCustomProxyPort("123456"), null);
     assert.equal(validateCustomProxyPort("99999999999999999999"), null);
+});
+
+test("isBlockedProxyHostname: blocks IPv4 loopback", () => {
+    assert.equal(isBlockedProxyHostname("127.0.0.1"), true);
+});
+
+test("isBlockedProxyHostname: blocks RFC1918 private IPv4", () => {
+    assert.equal(isBlockedProxyHostname("10.0.0.5"), true);
+});
+
+test("isBlockedProxyHostname: blocks link-local/cloud-metadata IPv4", () => {
+    assert.equal(isBlockedProxyHostname("169.254.169.254"), true);
+});
+
+test("isBlockedProxyHostname: blocks IPv6 loopback", () => {
+    assert.equal(isBlockedProxyHostname("::1"), true);
+});
+
+test("isBlockedProxyHostname: blocks bracketed IPv6 loopback", () => {
+    assert.equal(isBlockedProxyHostname("[::1]"), true);
+});
+
+test("isBlockedProxyHostname: blocks IPv6 unique-local", () => {
+    assert.equal(isBlockedProxyHostname("fd12::1"), true);
+});
+
+test("isBlockedProxyHostname: blocks IPv6 link-local", () => {
+    assert.equal(isBlockedProxyHostname("fe80::1"), true);
+});
+
+test("isBlockedProxyHostname: blocks IPv4-mapped IPv6 whose embedded IPv4 is private", () => {
+    assert.equal(isBlockedProxyHostname("::ffff:127.0.0.1"), true);
+});
+
+test("isBlockedProxyHostname: blocks localhost and .local suffixes", () => {
+    assert.equal(isBlockedProxyHostname("localhost"), true);
+    assert.equal(isBlockedProxyHostname("foo.local"), true);
+});
+
+test("isBlockedProxyHostname: does not block a valid public IPv4 address", () => {
+    assert.equal(isBlockedProxyHostname("8.8.8.8"), false);
+});
+
+test("isBlockedProxyHostname: does not block a valid public hostname", () => {
+    assert.equal(isBlockedProxyHostname("proxy.example.com"), false);
+});
+
+test("isBlockedProxyHostname: does not block a valid public IPv6 address", () => {
+    assert.equal(isBlockedProxyHostname("2001:4860:4860::8888"), false);
+});
+
+test("isBlockedProxyHostname: does not block an IPv4-mapped IPv6 address whose embedded IPv4 is public", () => {
+    assert.equal(isBlockedProxyHostname("::ffff:8.8.8.8"), false);
 });

@@ -1,5 +1,3 @@
-import { isIPv6 } from "node:net";
-
 const MAX_CUSTOM_PROXY_HOST_LENGTH = 253;
 const HOSTNAME_PATTERN =
     /^(?=.{1,253}$)(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$/;
@@ -28,15 +26,6 @@ function isPrivateOrReservedIPv4(parts: number[]): boolean {
     return false;
 }
 
-function isPrivateOrReservedIPv6(host: string): boolean {
-    const normalized = host.replace(/^\[|\]$/g, "").toLowerCase();
-    if (normalized === "::1" || normalized === "::") return true;
-    if (normalized.startsWith("fe8") || normalized.startsWith("fe9")) return true; // fe80::/10 (approx)
-    if (normalized.startsWith("fea") || normalized.startsWith("feb")) return true;
-    if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true; // fc00::/7 unique-local
-    return false;
-}
-
 /**
  * Minimum SSRF-oriented host validation for the Custom Proxy feature.
  * This is a static, literal-value check only — it does not resolve
@@ -50,11 +39,12 @@ export function validateCustomProxyHost(rawHost: string): string | null {
     if (host.endsWith(".local")) return null;
 
     if (host.includes(":") && !host.includes(".")) {
-        // Looks like an IPv6 literal (with or without brackets).
-        const candidate = host.replace(/^\[|\]$/g, "");
-        if (!isIPv6(candidate)) return null;
-        if (isPrivateOrReservedIPv6(host)) return null;
-        return host;
+        // IPv6 literals are not supported by the Custom Proxy storage format
+        // yet: createCustomProxy assembles "host:port[:user:pass]" lines,
+        // which cannot be unambiguously parsed back apart when the host
+        // itself contains colons. Reject explicitly rather than accepting
+        // a host that can never be stored correctly.
+        return null;
     }
 
     if (/^\d+(\.\d+){3}$/.test(host)) {
@@ -81,4 +71,45 @@ export function validateCustomProxyPort(rawPort: string): number | null {
     const port = Number(trimmed);
     if (port < 1 || port > 65535) return null;
     return port;
+}
+
+const IPV4_MAPPED_IPV6_PREFIX = "::ffff:";
+
+function isPrivateOrReservedIPv6(hostname: string): boolean {
+    const normalized = hostname.replace(/^\[|\]$/g, "");
+    if (normalized === "::1" || normalized === "::") return true;
+    if (normalized.startsWith("fe8") || normalized.startsWith("fe9")) return true; // fe80::/10 link-local (approx)
+    if (normalized.startsWith("fea") || normalized.startsWith("feb")) return true;
+    if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true; // fc00::/7 unique-local
+    if (normalized.startsWith(IPV4_MAPPED_IPV6_PREFIX)) {
+        const embedded = normalized.slice(IPV4_MAPPED_IPV6_PREFIX.length);
+        const octets = parseIPv4Octets(embedded);
+        if (octets && isPrivateOrReservedIPv4(octets)) return true;
+    }
+    return false;
+}
+
+/**
+ * Shared SSRF blocklist check for a hostname already extracted from a
+ * proxy line (e.g. via URL.hostname, or the host portion of a manually
+ * parsed host:port[:user:pass] line). Blocks the same categories as
+ * validateCustomProxyHost (localhost/.local suffixes, IPv4 private/
+ * reserved ranges) plus the known-private IPv6 ranges (loopback,
+ * unspecified, link-local, unique-local) and IPv4-mapped IPv6 addresses
+ * whose embedded IPv4 is itself private/reserved. Unlike
+ * validateCustomProxyHost, this does not reject IPv6 outright - list-mode
+ * proxies may already contain legitimate public IPv6 hosts in URL form.
+ */
+export function isBlockedProxyHostname(rawHostname: string): boolean {
+    const hostname = (rawHostname || "").trim().toLowerCase();
+    if (!hostname) return true;
+    if (hostname === "localhost" || hostname.endsWith(".localhost"))
+        return true;
+    if (hostname.endsWith(".local")) return true;
+    if (hostname.includes(":")) {
+        return isPrivateOrReservedIPv6(hostname);
+    }
+    const octets = parseIPv4Octets(hostname);
+    if (octets) return isPrivateOrReservedIPv4(octets);
+    return false;
 }

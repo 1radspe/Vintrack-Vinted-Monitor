@@ -2,6 +2,11 @@
 
 import { auth } from "@/auth";
 import { db } from "@/lib/db";
+import {
+    isBlockedProxyHostname,
+    validateCustomProxyHost,
+    validateCustomProxyPort,
+} from "@/lib/custom-proxy-validation";
 import { REGIONS } from "@/lib/regions";
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
@@ -95,6 +100,7 @@ function validateProxyLine(line: string): string | null {
             if (!VALID_SCHEMES.includes(u.protocol.replace(":", "")))
                 return null;
             if (!u.hostname || !u.port) return null;
+            if (isBlockedProxyHostname(u.hostname)) return null;
             return line;
         } catch {
             return null;
@@ -110,10 +116,12 @@ function validateProxyLine(line: string): string | null {
         const host = parts.slice(0, parts.length - 3).join(":");
         if (!host || !port || !user || !pass) return null;
         if (!/^\d{1,5}$/.test(port)) return null;
+        if (isBlockedProxyHostname(host)) return null;
         return `http://${user}:${pass}@${host}:${port}`;
     }
 
     if (parts.length === 2 && /^\d{1,5}$/.test(parts[1])) {
+        if (isBlockedProxyHostname(parts[0])) return null;
         return `http://${line}`;
     }
 
@@ -154,6 +162,62 @@ function parseBandwidthLimitBytes(formData: FormData) {
     }
 
     return BigInt(Math.round(limitGb * BYTES_PER_GB));
+}
+
+export async function createCustomProxy(formData: FormData) {
+    const session = await auth();
+    if (!session?.user?.id) throw new Error("Unauthorized");
+    await requireFeatureAccessForUser("proxy_groups", session.user.id);
+
+    const rawHost = (formData.get("host") as string | null) ?? "";
+    const rawPort = (formData.get("port") as string | null) ?? "";
+    const username = ((formData.get("username") as string | null) ?? "").trim();
+    const password = ((formData.get("password") as string | null) ?? "").trim();
+    const rawName = ((formData.get("name") as string | null) ?? "").trim();
+    const bandwidthLimitBytes = parseBandwidthLimitBytes(formData);
+
+    const host = validateCustomProxyHost(rawHost);
+    if (!host) {
+        throw new Error(
+            "Enter a valid, publicly routable proxy host or IP address.",
+        );
+    }
+
+    const port = validateCustomProxyPort(rawPort);
+    if (!port) {
+        throw new Error("Enter a valid port between 1 and 65535.");
+    }
+
+    if ((username && !password) || (!username && password)) {
+        throw new Error(
+            "Provide both a username and password, or leave both blank.",
+        );
+    }
+
+    const line =
+        username && password
+            ? `${host}:${port}:${username}:${password}`
+            : `${host}:${port}`;
+
+    const normalizedLine = validateProxyLine(line);
+    if (!normalizedLine) {
+        // Defense in depth: this should not happen given the checks above,
+        // but never fall back to saving an unvalidated line.
+        throw new Error("The proxy configuration could not be validated.");
+    }
+
+    const name = rawName || `Custom Proxy (${host}:${port})`;
+
+    await db.proxy_groups.create({
+        data: {
+            userId: session.user.id,
+            name,
+            proxies: normalizedLine,
+            bandwidth_limit_bytes: bandwidthLimitBytes,
+        },
+    });
+
+    revalidatePath("/proxies");
 }
 
 export async function getProxyGroups() {
