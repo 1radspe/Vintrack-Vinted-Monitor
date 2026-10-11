@@ -92,6 +92,13 @@ export function validateCustomProxyHost(rawHost: string): string | null {
     if (/^\d+$/.test(host.split(".").at(-1)!)) return null;
     if (host.endsWith(".localhost") || host.endsWith(".local")) return null;
     if (host.endsWith(".internal") || host.endsWith(".home.arpa")) return null;
+    // WHATWG URLs accept additional numeric IPv4 forms (including mixed hex
+    // octets). Never let an apparent hostname serialize as a different IP.
+    try {
+        if (new URL(`http://${host}`).hostname !== host) return null;
+    } catch {
+        return null;
+    }
     return host;
 }
 

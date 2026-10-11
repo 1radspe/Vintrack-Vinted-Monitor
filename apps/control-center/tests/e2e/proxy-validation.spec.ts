@@ -48,7 +48,10 @@ test.describe("Proxy group validation", () => {
                 "localhost.:8080",
             ].join("\n"),
         );
-        await expect(page.getByText(/No valid proxies found/)).toBeVisible();
+        // Production intentionally masks thrown Server Action error messages.
+        await expect(
+            page.locator('[data-sonner-toast][data-type="error"]').last(),
+        ).toBeVisible();
         await expect(page.getByRole("dialog")).toBeVisible();
         expect(await db.proxy_groups.count({ where: { userId, name } })).toBe(
             0,
@@ -103,7 +106,10 @@ test.describe("Proxy group validation", () => {
         await card.getByRole("button", { name: "Edit", exact: true }).click();
         await card.locator("textarea").fill("http://[::ffff:10.0.0.1]:8080");
         await card.getByRole("button", { name: "Save", exact: true }).click();
-        await expect(page.getByText(/No valid proxies found/)).toBeVisible();
+        // Production intentionally masks thrown Server Action error messages.
+        await expect(
+            page.locator('[data-sonner-toast][data-type="error"]').last(),
+        ).toBeVisible();
         expect(
             (
                 await db.proxy_groups.findUniqueOrThrow({
