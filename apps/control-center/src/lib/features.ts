@@ -11,6 +11,8 @@ export const FEATURE_KEYS = [
     "liked_items",
     "chats",
     "offers",
+    "auto_offers",
+    "auto_messages",
     "checkout_links",
 ] as const;
 
@@ -137,6 +139,26 @@ export const FEATURE_DEFINITIONS: readonly FeatureDefinition[] = [
             "Blocks new offer actions. Existing offers and account data are not modified.",
         group: "Vinted account",
         dependencies: ["vinted_account"],
+    },
+    {
+        key: "auto_offers",
+        label: "Auto-Offer",
+        description:
+            "Send configured price offers automatically for new monitor matches.",
+        disabledEffect:
+            "Stops automatic offers and blocks enabling the module. Manual offers remain available.",
+        group: "Vinted account",
+        dependencies: ["offers"],
+    },
+    {
+        key: "auto_messages",
+        label: "Auto-Message",
+        description:
+            "Send a configured message automatically for new monitor matches.",
+        disabledEffect:
+            "Stops automatic messages and blocks enabling the module. Manual messaging remains available.",
+        group: "Vinted account",
+        dependencies: ["chats"],
     },
     {
         key: "checkout_links",

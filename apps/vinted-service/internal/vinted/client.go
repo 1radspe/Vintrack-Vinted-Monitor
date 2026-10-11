@@ -3084,6 +3084,14 @@ func (c *Client) SendMessage(itemID, sellerID int64, message string) error {
 	return err
 }
 
+// SendAutomaticMessage never repeats a mutation after an upstream failure.
+func (c *Client) SendAutomaticMessage(itemID, sellerID int64, message string) error {
+	if err := c.WarmUp(); err != nil {
+		return err
+	}
+	return c.doSendMessage(itemID, sellerID, message)
+}
+
 func (c *Client) GetInbox(page, perPage int) (*InboxResponse, error) {
 	inbox, err := c.doGetInbox(page, perPage)
 	if err != nil && (strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "403")) && c.session.RefreshToken != "" {
@@ -3410,7 +3418,7 @@ func (c *Client) doSendMessage(itemID, sellerID int64, message string) error {
 	respBody, _ := io.ReadAll(resp.Body)
 	bodyStr := strings.TrimSpace(string(respBody))
 
-	log.Printf("[vinted] POST /api/v2/conversations -> %d (%.300s)", resp.StatusCode, bodyStr)
+	log.Printf("[vinted] POST /api/v2/conversations -> %d", resp.StatusCode)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("create conversation failed (HTTP %d): %s", resp.StatusCode, truncate(bodyStr, 300))
@@ -3464,7 +3472,7 @@ func (c *Client) doSendMessage(itemID, sellerID int64, message string) error {
 	respBody2, _ := io.ReadAll(resp2.Body)
 	bodyStr2 := strings.TrimSpace(string(respBody2))
 
-	log.Printf("[vinted] POST /api/v2/conversations/%d/replies -> %d (%.300s)", convoID, resp2.StatusCode, bodyStr2)
+	log.Printf("[vinted] POST /api/v2/conversations/%d/replies -> %d", convoID, resp2.StatusCode)
 
 	if resp2.StatusCode >= 200 && resp2.StatusCode < 300 {
 		log.Printf("[vinted] message sent to seller %d for item %d", sellerID, itemID)
@@ -3485,6 +3493,14 @@ func (c *Client) SendOffer(itemID, sellerID int64, price string, currency string
 		return c.doSendOffer(itemID, sellerID, price, currency)
 	}
 	return err
+}
+
+// SendAutomaticOffer never repeats a mutation after an upstream failure.
+func (c *Client) SendAutomaticOffer(itemID, sellerID int64, price string, currency string) error {
+	if err := c.WarmUp(); err != nil {
+		return err
+	}
+	return c.doSendOffer(itemID, sellerID, price, currency)
 }
 
 func (c *Client) doSendOffer(itemID, sellerID int64, price string, currency string) error {
@@ -3515,7 +3531,7 @@ func (c *Client) doSendOffer(itemID, sellerID int64, price string, currency stri
 	respBody, _ := io.ReadAll(resp.Body)
 	bodyStr := strings.TrimSpace(string(respBody))
 
-	log.Printf("[vinted] POST /api/v2/conversations (for offer context) -> %d (%.300s)", resp.StatusCode, bodyStr)
+	log.Printf("[vinted] POST /api/v2/conversations (for offer context) -> %d", resp.StatusCode)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("failed to get transaction/conversation context (HTTP %d): %s", resp.StatusCode, truncate(bodyStr, 300))
@@ -3564,7 +3580,7 @@ func (c *Client) doSendOffer(itemID, sellerID int64, price string, currency stri
 	respBody2, _ := io.ReadAll(resp2.Body)
 	bodyStr2 := strings.TrimSpace(string(respBody2))
 
-	log.Printf("[vinted] POST /api/v2/transactions/%d/offer_requests -> %d (%.300s)", txID, resp2.StatusCode, bodyStr2)
+	log.Printf("[vinted] POST /api/v2/transactions/%d/offer_requests -> %d", txID, resp2.StatusCode)
 
 	if resp2.StatusCode >= 200 && resp2.StatusCode < 300 {
 		log.Printf("[vinted] offer sent for item %d (price: %s %s)", itemID, price, currency)

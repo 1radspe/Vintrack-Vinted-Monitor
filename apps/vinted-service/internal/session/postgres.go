@@ -82,12 +82,19 @@ func (s *persistentStore) FeatureAccess(ctx context.Context, userID string, feat
 		return FeatureAccess{Reason: "role_denied"}, nil
 	}
 	if feature != "vinted_account" {
-		parent, err := s.FeatureAccess(ctx, userID, "vinted_account")
+		parentFeature := "vinted_account"
+		if feature == "auto_offers" {
+			parentFeature = "offers"
+		}
+		if feature == "auto_messages" {
+			parentFeature = "chats"
+		}
+		parent, err := s.FeatureAccess(ctx, userID, parentFeature)
 		if err != nil {
 			return FeatureAccess{}, err
 		}
 		if !parent.Allowed {
-			return FeatureAccess{Reason: "dependency_disabled", Dependency: "vinted_account"}, nil
+			return FeatureAccess{Reason: "dependency_disabled", Dependency: parentFeature}, nil
 		}
 	}
 	if feature == "checkout_links" && !checkoutEnabled {

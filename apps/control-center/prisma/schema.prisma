@@ -72,6 +72,7 @@ model User {
   member_reward_prompts        member_reward_prompts[]
   assigned_github_sponsorships github_sponsorships[]
   price_watches                price_watches[]
+  account_automation_attempts  account_automation_attempts[]
 
   @@index([name])
   @@index([createdAt])
@@ -255,9 +256,48 @@ model monitors {
   alert_notifications alert_notifications[]
   proxy_incidents     monitor_proxy_incidents[]
   item_detections     monitor_item_detections[]
+  account_automations monitor_account_automations[]
 
   @@index([userId])
   @@index([status, userId])
+}
+
+model monitor_account_automations {
+  monitor_id       Int
+  monitor          monitors @relation(fields: [monitor_id], references: [id], onDelete: Cascade)
+  kind             String   @db.VarChar(20)
+  enabled          Boolean  @default(false)
+  account_id       BigInt
+  domain           String   @db.VarChar(255)
+  discount_percent Int      @default(10)
+  max_price_minor  Int      @default(10000)
+  message_template String   @default("") @db.Text
+  enabled_at       DateTime @default(now()) @db.Timestamp(6)
+  revision         Int      @default(1)
+  updated_at       DateTime @updatedAt @db.Timestamp(6)
+
+  @@id([monitor_id, kind])
+  @@index([enabled, enabled_at])
+}
+
+// Claims survive monitor deletion, relinking and uncertain upstream outcomes.
+model account_automation_attempts {
+  id           BigInt   @id @default(autoincrement())
+  user_id      String
+  user         User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  account_id   BigInt
+  domain       String   @db.VarChar(255)
+  item_id      BigInt
+  monitor_id   Int
+  kind         String   @db.VarChar(20)
+  status       String   @default("sending") @db.VarChar(20)
+  reason       String   @default("") @db.VarChar(100)
+  created_at   DateTime @default(now()) @db.Timestamp(6)
+  completed_at DateTime? @db.Timestamp(6)
+
+  @@unique([user_id, account_id, domain, item_id, kind])
+  @@index([user_id, account_id, domain, created_at])
+  @@index([monitor_id, created_at])
 }
 
 model free_proxies {

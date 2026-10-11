@@ -44,6 +44,9 @@ import { MonitorItemCount } from "@/components/monitors/monitor-item-count";
 import { MonitorMetricsDialog } from "@/components/monitors/monitor-metrics-dialog";
 import { getBannedSellerIds, visibleSellerWhere } from "@/lib/seller-bans";
 import { DemoMonitorLease } from "@/components/monitors/demo-monitor-lease";
+import { AccountAutomations } from "@/components/monitors/account-automations";
+import { getFeatureAccessForUser } from "@/lib/features.server";
+import { REGIONS } from "@/lib/regions";
 import { inferProxyErrorCode } from "@/lib/proxy-errors";
 import {
     loadMonitorRunMetrics,
@@ -72,6 +75,64 @@ export default async function MonitorPage({
     });
 
     if (!monitor) return notFound();
+
+    const [
+        automations,
+        automationAttempts,
+        linkedAccount,
+        offerAccess,
+        messageAccess,
+    ] = await Promise.all([
+        db.monitor_account_automations.findMany({
+            where: { monitor_id: monitor.id },
+        }),
+        db.account_automation_attempts.findMany({
+            where: { monitor_id: monitor.id, user_id: session.user.id },
+            orderBy: { created_at: "desc" },
+            take: 10,
+        }),
+        db.vinted_sessions.findUnique({
+            where: { userId: session.user.id },
+            select: { vinted_user_id: true, domain: true, status: true },
+        }),
+        getFeatureAccessForUser("auto_offers", session.user.id),
+        getFeatureAccessForUser("auto_messages", session.user.id),
+    ]);
+    const latestUnverifiedAction = linkedAccount
+        ? await db.account_automation_attempts.findFirst({
+              where: {
+                  user_id: session.user.id,
+                  account_id: linkedAccount.vinted_user_id,
+                  domain: linkedAccount.domain,
+                  status: "uncertain",
+                  created_at: { gt: new Date(Date.now() - 15 * 60 * 1000) },
+              },
+              orderBy: { created_at: "desc" },
+              select: { created_at: true },
+          })
+        : null;
+    const automationPauseUntil = latestUnverifiedAction
+        ? new Date(
+              latestUnverifiedAction.created_at.getTime() + 15 * 60 * 1000,
+          ).toISOString()
+        : undefined;
+    const matchingAccount = Boolean(
+        linkedAccount?.status === "active" &&
+        linkedAccount.vinted_user_id > BigInt(0) &&
+        linkedAccount.domain.replace(/^www\./, "") ===
+            REGIONS.find((region) => region.code === monitor.region)?.domain,
+    );
+    const automationSettings = (kind: string) => {
+        const config = automations.find((entry) => entry.kind === kind);
+        return config
+            ? {
+                  enabled: config.enabled,
+                  discountPercent: config.discount_percent,
+                  maxPriceMinor: config.max_price_minor,
+                  messageTemplate: config.message_template,
+              }
+            : undefined;
+    };
 
     const usedBrandIds = (monitor.brand_ids || "")
         .split(",")
@@ -150,7 +211,7 @@ export default async function MonitorPage({
         <MonitorLiveProvider initialItemCount={visibleItemCount}>
             <div className="space-y-6">
                 <div className="flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
-                    <div className="flex items-center gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
                         <Link href="/dashboard">
                             <Button
                                 variant="outline"
@@ -161,7 +222,7 @@ export default async function MonitorPage({
                             </Button>
                         </Link>
 
-                        <div>
+                        <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
                                 <h1 className="min-w-0 text-2xl font-bold tracking-tight">
                                     {monitor.name}
@@ -379,7 +440,30 @@ export default async function MonitorPage({
                         </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
+                        <AccountAutomations
+                            monitorId={monitor.id}
+                            monitorName={monitor.name}
+                            monitorActive={monitor.status === "active"}
+                            pausedUntil={automationPauseUntil}
+                            currency={getRegionCurrencyCode(monitor.region)}
+                            offer={automationSettings("offer")}
+                            message={automationSettings("message")}
+                            offerAvailable={
+                                matchingAccount && offerAccess.allowed
+                            }
+                            messageAvailable={
+                                matchingAccount && messageAccess.allowed
+                            }
+                            attempts={automationAttempts.map((attempt) => ({
+                                id: attempt.id.toString(),
+                                itemId: attempt.item_id.toString(),
+                                kind: attempt.kind,
+                                status: attempt.status,
+                                reason: attempt.reason,
+                                createdAt: attempt.created_at.toISOString(),
+                            }))}
+                        />
                         <Link href={`/monitors/${monitor.id}/edit`}>
                             <Button
                                 variant="outline"
